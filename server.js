@@ -5,7 +5,8 @@ const app = express();
 app.use(express.json({ type: ["application/json", "application/*+json"] }));
 const PORT = process.env.PORT || 3000;
 const HL_API = "https://api.hyperliquid.xyz/info";
-const RADAR = ["BTC","ETH","SOL","HYPE","ZEC","PUMP","LIT","ENA","AVAX","TAO"];
+const RADAR = ["BTC","ETH","SOL","HYPE","ZEC","PUMP","LIT","ENA","UNI","PONS","NEAR","AERO","AVAX","TAO"];
+const WALLET = process.env.HL_WALLET || "0xD969A2938Bc8691B39b8b53Eaa77765d381b3757";
 
 async function hyperliquid(body) {
   const response = await fetch(HL_API, {
@@ -40,10 +41,53 @@ async function marketData(symbols = RADAR) {
   return {source:"Hyperliquid Mainnet",timestamp:new Date().toISOString(),markets};
 }
 
+async function portfolioData() {
+  const [state, orders, mids] = await Promise.all([
+    hyperliquid({type:"clearinghouseState", user:WALLET}),
+    hyperliquid({type:"frontendOpenOrders", user:WALLET}),
+    hyperliquid({type:"allMids"})
+  ]);
+
+  const positions=(state.assetPositions || []).map(x => x.position).filter(p => Number(p.szi) !== 0).map(p => ({
+    coin:p.coin,
+    side:Number(p.szi) > 0 ? "LONG" : "SHORT",
+    size:Math.abs(Number(p.szi)),
+    entry_price:p.entryPx == null ? null : Number(p.entryPx),
+    mark_price:mids[p.coin] == null ? null : Number(mids[p.coin]),
+    position_value:p.positionValue == null ? null : Number(p.positionValue),
+    unrealized_pnl:p.unrealizedPnl == null ? null : Number(p.unrealizedPnl),
+    liquidation_price:p.liquidationPx == null ? null : Number(p.liquidationPx),
+    leverage:p.leverage || null,
+    margin_used:p.marginUsed == null ? null : Number(p.marginUsed)
+  }));
+
+  const open_orders=(orders || []).map(o => ({
+    coin:o.coin,
+    side:o.side,
+    size:Number(o.sz),
+    price:Number(o.limitPx),
+    order_type:o.orderType || null,
+    trigger_condition:o.triggerCondition || null,
+    trigger_price:o.triggerPx == null ? null : Number(o.triggerPx),
+    reduce_only:Boolean(o.reduceOnly),
+    order_id:o.oid
+  }));
+
+  return {
+    source:"Hyperliquid Mainnet",
+    timestamp:new Date().toISOString(),
+    wallet:WALLET,
+    account_value:Number(state.marginSummary?.accountValue || 0),
+    withdrawable:Number(state.withdrawable || 0),
+    positions,
+    open_orders
+  };
+}
+
 app.get("/", (req,res) => res.json({
   service:"Hyperliquid Scanner MCP",
   status:"online",
-  endpoints:["/market","/mcp"],
+  endpoints:["/market","/portfolio","/mcp"],
   timestamp:new Date().toISOString()
 }));
 
@@ -52,6 +96,15 @@ app.get("/market", async (req,res) => {
     const symbols = req.query.symbol ? String(req.query.symbol).split(",") : RADAR;
     res.set("Cache-Control","no-store");
     res.json(await marketData(symbols));
+  } catch (e) {
+    res.status(500).json({error:e.message,timestamp:new Date().toISOString()});
+  }
+});
+
+app.get("/portfolio", async (req,res) => {
+  try {
+    res.set("Cache-Control","no-store");
+    res.json(await portfolioData());
   } catch (e) {
     res.status(500).json({error:e.message,timestamp:new Date().toISOString()});
   }
